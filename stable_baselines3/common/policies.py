@@ -343,6 +343,58 @@ class BasePolicy(BaseModel, ABC):
 
         return actions, state
 
+    def predict_conditioned(
+        self,
+        observation: Union[np.ndarray, Dict[str, np.ndarray]],
+        state: Optional[Tuple[np.ndarray, ...]] = None,
+        episode_start: Optional[np.ndarray] = None,
+        deterministic: bool = False,
+            weights=None,
+            biases=None
+    ) -> Tuple[np.ndarray, Optional[Tuple[np.ndarray, ...]]]:
+        """
+        Get the policy action from an observation (and optional hidden state).
+        Includes sugar-coating to handle different observations (e.g. normalizing images).
+
+        :param observation: the input observation
+        :param state: The last hidden states (can be None, used in recurrent policies)
+        :param episode_start: The last masks (can be None, used in recurrent policies)
+            this correspond to beginning of episodes,
+            where the hidden states of the RNN must be reset.
+        :param deterministic: Whether or not to return deterministic actions.
+        :return: the model's action and the next hidden state
+            (used in recurrent policies)
+        """
+        # TODO (GH/1): add support for RNN policies
+        # if state is None:
+        #     state = self.initial_state
+        # if episode_start is None:
+        #     episode_start = [False for _ in range(self.n_envs)]
+        # Switch to eval mode (this affects batch norm / dropout)
+        self.set_training_mode(False)
+
+        observation, vectorized_env = self.obs_to_tensor(observation)
+
+        with th.no_grad():
+            actions = self._predict_conditioned(observation, deterministic=deterministic,weights=weights,biases=biases)
+        # Convert to numpy, and reshape to the original action shape
+        actions = actions.cpu().numpy().reshape((-1,) + self.action_space.shape)
+
+        if isinstance(self.action_space, gym.spaces.Box):
+            if self.squash_output:
+                # Rescale to proper domain when using squashing
+                actions = self.unscale_action(actions)
+            else:
+                # Actions could be on arbitrary scale, so clip the actions to avoid
+                # out of bound error (e.g. if sampling from a Gaussian distribution)
+                actions = np.clip(actions, self.action_space.low, self.action_space.high)
+
+        # Remove batch dimension if needed
+        if not vectorized_env:
+            actions = actions.squeeze(axis=0)
+
+        return actions, state
+
     def scale_action(self, action: np.ndarray) -> np.ndarray:
         """
         Rescale the action from [low, high] to [-1, 1]
